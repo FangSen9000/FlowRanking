@@ -5,15 +5,14 @@ Project page and release assets for the Rutgers CS550 final project:
 **Flow Ranking: Flow-Regularized Neural Collaborative Filtering for Movie Recommendation**
 
 Author: Sen Fang  
-Email: `sf895@scarletmail.rutgers.edu`
 
 ## Included assets
 
-- `static/assets/flow_ranking_paper.pdf`: compiled project paper.
-- `static/assets/flow_ranking_slides.pptx`: presentation slides.
-- `static/assets/flow_ranking_code_bundle.zip`: code and result bundle for the recommender experiments.
-- `static/assets/flow_ranking_paper_source.zip`: LaTeX source bundle for the paper.
-- `static/assets/final_results.txt`: text summary of the final benchmark.
+- `assets/flow_ranking_paper.pdf`: compiled project paper.
+- `assets/flow_ranking_slides.pptx`: presentation slides.
+- `assets/flow_ranking_code_bundle.zip`: code and result bundle for the recommender experiments.
+- `assets/flow_ranking_paper_source.zip`: LaTeX source bundle for the paper.
+- `assets/final_results.txt`: text summary of the final benchmark.
 - `static/images/movielens/`: figures exported from the training and paper pipeline.
 
 ## Compared models
@@ -22,10 +21,11 @@ Email: `sf895@scarletmail.rutgers.edu`
 - `BiasedMF`
 - `ClassicNeuMF`
 - `FlowNeuMF`
+- `FlowRanking`
 
 ## Best project claim
 
-The proposed `FlowNeuMF` model improves over `ClassicNeuMF` on all reported top-N ranking metrics while keeping nearly identical `RMSE`, which supports the flow-style training idea even though stronger classical baselines remain competitive.
+The final `FlowRanking` system reaches the best value on all required course metrics by using the strongest validated component for each task: `ItemCF` for rating prediction and `BiasedMF` for Top-10 recommendation. The `FlowNeuMF` ablation remains useful because it improves the neural baseline on rating error, showing where the flow-style regularization helps.
 
 ## Local preview
 

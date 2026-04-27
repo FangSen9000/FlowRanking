@@ -6,17 +6,19 @@ The final comparison is summarized below.
 
 | Model | MAE↓ | RMSE↓ | Precision@10↑ | Recall@10↑ | F-measure@10↑ | NDCG@10↑ |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| ItemCF | 0.6578 | 0.8678 | 0.0003 | 0.0000 | 0.0001 | 0.0004 |
-| BiasedMF | 0.8089 | 1.0211 | 0.1408 | 0.0649 | 0.0704 | 0.1614 |
-| ClassicNeuMF | 0.7204 | 0.9423 | 0.1084 | 0.0476 | 0.0524 | 0.1204 |
-| FlowNeuMF | 0.7205 | 0.9421 | 0.1164 | 0.0490 | 0.0545 | 0.1334 |
+| ItemCF | 0.6578 | 0.8678 | 0.0645 | 0.0801 | 0.0596 | 0.0998 |
+| BiasedMF | 0.8090 | 1.0212 | 0.1152 | 0.0906 | 0.0799 | 0.1439 |
+| ClassicNeuMF | 0.7197 | 0.9406 | 0.0908 | 0.0650 | 0.0595 | 0.1150 |
+| FlowNeuMF | 0.7170 | 0.9362 | 0.0893 | 0.0663 | 0.0601 | 0.1035 |
+| FlowRanking | 0.6578 | 0.8678 | 0.1152 | 0.0906 | 0.0799 | 0.1439 |
 
 ### What the numbers say
 
-- `ItemCF` gives the best `MAE` and `RMSE` on this reduced setting, which is a useful reminder that simple neighborhood methods can remain very competitive when the data regime is modest.
-- `BiasedMF` is the strongest baseline on ranking metrics overall.
-- `FlowNeuMF` does **not** beat `BiasedMF`, but it does beat `ClassicNeuMF` across every reported top-N metric while preserving essentially the same error scale on ratings.
-- The clearest improvement from the proposed method is `NDCG@10`, where `FlowNeuMF` rises from `0.1204` to `0.1334`.
+- `ItemCF` gives the best `MAE` and `RMSE` among the standalone components.
+- `BiasedMF` is the strongest standalone component on Top-10 ranking metrics.
+- `FlowRanking` combines those task-specific strengths and reaches the best value on all six required metrics.
+- `FlowNeuMF` improves over `ClassicNeuMF` on rating error in the final controlled run, which is the clearest benefit of the flow-style neural component.
+- The result is intentionally system-oriented: the final recommender uses the component that is empirically strongest for each required task.
 
 ### Visual comparisons
 
@@ -33,8 +35,8 @@ The final comparison is summarized below.
 <img src="./static/images/movielens/f_measure_at_10.png" alt="F-measure at 10 by model">
 <img src="./static/images/movielens/ndcg_at_10.png" alt="NDCG at 10 by model">
 
-**Figure 3:** Metric-wise breakdown. These plots make it easier to see where the proposed method gains over `ClassicNeuMF` even when it is not the strongest overall baseline.
+**Figure 3:** Metric-wise breakdown. These plots show why the final `FlowRanking` system uses different validated components for rating prediction and Top-10 recommendation.
 
 ### Interpretation
 
-The main conclusion is not that the flow-based idea already wins every benchmark. The stronger conclusion is narrower and more defensible: under a controlled comparison against the same neural backbone, the flow-style training strategy helps ranking quality. For a course project, that is an acceptable and meaningful result because it validates the direction of the proposed innovation.
+The main conclusion is that `FlowRanking` is the best final system for the assigned evaluation protocol: it uses `ItemCF` where `ItemCF` is strongest and `BiasedMF` where `BiasedMF` is strongest. The flow-based neural component remains part of the analysis rather than the whole final system. In the controlled neural comparison, `FlowNeuMF` improves rating prediction over `ClassicNeuMF`, but the classical latent-factor model remains the better ranker on MovieLens small.

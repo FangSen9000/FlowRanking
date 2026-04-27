@@ -35,6 +35,8 @@ from torch.utils.data import Dataset, DataLoader
 # ── config ────────────────────────────────────────────────────────────────────
 DEFAULT_DATA_PATH = "./data/ml-latest-small"
 DEFAULT_PAPER_DIR = "/research/cbim/vast/sf895/code/Rutgers/cs550/movielens_acm_paper"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_RESULTS_DIR = os.path.join(SCRIPT_DIR, "results")
 DEVICE    = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {DEVICE}")
 if torch.cuda.is_available():
@@ -72,7 +74,7 @@ def style_barplot(ax, labels, values, title, ascending_good=False, highlight_lab
             colors.append(BASELINE_BLUE)
             edgecolors.append("black")
             linewidths.append(0.8)
-    ax.bar(x, values, color=colors, edgecolor=edgecolors, linewidth=linewidths)
+    bars = ax.bar(x, values, color=colors, edgecolor=edgecolors, linewidth=linewidths)
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=18, ha="right")
     ax.set_title(title)
@@ -85,6 +87,18 @@ def style_barplot(ax, labels, values, title, ascending_good=False, highlight_lab
         ax.set_yscale("symlog", linthresh=linthresh)
     if ascending_good:
         ax.invert_yaxis()
+    for bar, value in zip(bars, values):
+        y = bar.get_height()
+        y_text = y * 1.08 if y > 0 else 1e-4
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            y_text,
+            f"{value:.4f}",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            rotation=0,
+        )
 
 # ═════════════════════════════════════════════════════════════════════════════
 # 1.  Data utilities
@@ -322,6 +336,7 @@ class ItemCF:
         normed = Rc / norms
         self.sim = (normed.T @ normed).astype(np.float32)
         np.fill_diagonal(self.sim, 0.0)
+        self.R = R
         self.Rc = Rc
         self.rated_mask = R == R
         self.item_popularity = np.sum(self.rated_mask, axis=0)
@@ -337,9 +352,10 @@ class ItemCF:
         rated = self.rated_mask[u]
         sims = self.sim[i].copy()
         sims[~rated] = 0.0
-        if sims.sum() == 0:
+        positive_mask = sims > 0
+        if not np.any(positive_mask):
             return float(self.umean[u])
-        k = min(self.k, int((sims > 0).sum()))
+        k = min(self.k, int(positive_mask.sum()))
         if k == 0:
             return float(self.umean[u])
         top_idx = np.argpartition(sims, -k)[-k:]
@@ -356,35 +372,34 @@ class ItemCF:
     def predict_batch(self, df):
         return np.array([self.predict(row.userId, row.movieId) for row in df.itertuples()], dtype=np.float32)
 
-    def score_all_items(self, uid):
+    def score_all_items(self, uid, clamp_output=False, positive_threshold=4.0):
         u = self.u2i.get(uid)
         if u is None:
             popularity_scores = self.item_popularity.astype(np.float32)
             return popularity_scores / max(popularity_scores.max(), 1)
 
-        user_mean = self.umean[u]
         rated = self.rated_mask[u]
-        centered = self.Rc[u]
-        scores = np.full(len(self.items), user_mean, dtype=np.float32)
+        positive_rated = rated & (self.R[u] >= positive_threshold)
+        positive_idx = np.flatnonzero(positive_rated)
+        if len(positive_idx) == 0:
+            popularity_scores = self.item_popularity.astype(np.float32)
+            return popularity_scores / max(popularity_scores.max(), 1)
 
-        rated_idx = np.flatnonzero(rated)
-        if len(rated_idx) == 0:
-            return scores
-
-        for item_idx in range(len(self.items)):
-            sims = self.sim[item_idx, rated_idx]
-            k = min(self.k, len(sims))
-            if k == 0:
-                continue
-            top = np.argpartition(sims, -k)[-k:]
-            weights = sims[top]
-            pos = weights > 0
-            if not np.any(pos):
-                continue
-            weights = weights[pos]
-            neigh_idx = rated_idx[top[pos]]
-            scores[item_idx] = user_mean + np.dot(weights, centered[neigh_idx]) / np.abs(weights).sum()
-        return np.clip(scores, 1.0, 5.0)
+        sim_subset = np.maximum(self.sim[:, positive_idx], 0.0)
+        k = min(self.k, sim_subset.shape[1])
+        scores = np.zeros(len(self.items), dtype=np.float32)
+        if k > 0:
+            top = np.argpartition(sim_subset, -k, axis=1)[:, -k:]
+            weights = np.take_along_axis(sim_subset, top, axis=1)
+            pref = np.maximum(self.R[u, positive_idx] - positive_threshold + 1.0, 0.0).astype(np.float32)
+            pref_vals = pref[top]
+            scores = np.sum(weights * pref_vals, axis=1)
+        # Popularity only acts as a very small tie-breaker when many items receive
+        # nearly identical neighborhood scores.
+        scores = scores + 1e-6 * self.item_popularity.astype(np.float32)
+        if clamp_output:
+            return np.clip(scores, 1.0, 5.0)
+        return scores
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -403,10 +418,16 @@ def ndcg_at_k(rec, rel, k):
     return dcg / ideal if ideal > 0 else 0.0
 
 
-def neural_topn(model, u2i, m2i, item_arr, train_df, test_df, n=10, batch=512, sample_users=None):
+def build_relevance_sets(test_df, positive_threshold):
+    rel_df = test_df[test_df.rating >= positive_threshold]
+    return rel_df.groupby("userId")["movieId"].apply(set).to_dict()
+
+
+def neural_topn(model, u2i, m2i, item_arr, train_df, test_df, n=10, batch=512,
+                sample_users=None, positive_threshold=4.0):
     model.eval()
     seen  = train_df.groupby("userId")["movieId"].apply(set).to_dict()
-    relev = test_df.groupby("userId")["movieId"].apply(set).to_dict()
+    relev = build_relevance_sets(test_df, positive_threshold)
 
     # Sample users if specified (for large datasets)
     if sample_users and sample_users < len(relev):
@@ -429,8 +450,9 @@ def neural_topn(model, u2i, m2i, item_arr, train_df, test_df, n=10, batch=512, s
         if len(c_mid) == 0: continue
         uid_t = torch.full((len(c_mid),), uidx, dtype=torch.long, device=DEVICE)
         scores = []
-        for s in range(0, len(c_mid), batch):
-            scores.append(model.predict_rating(uid_t[s:s+batch], c_iidx[s:s+batch]).cpu().numpy())
+        with torch.no_grad():
+            for s in range(0, len(c_mid), batch):
+                scores.append(model.predict_score(uid_t[s:s+batch], c_iidx[s:s+batch]).detach().cpu().numpy())
         scores = np.concatenate(scores)
         k_ = min(n, len(c_mid))
         ti = np.argpartition(scores, -k_)[-k_:]
@@ -443,9 +465,10 @@ def neural_topn(model, u2i, m2i, item_arr, train_df, test_df, n=10, batch=512, s
     return float(np.mean(Ps)), float(np.mean(Rs)), float(np.mean(Fs)), float(np.mean(Ns))
 
 
-def numpy_topn(score_fn, item_arr, train_df, test_df, n=10, sample_users=None):
+def numpy_topn(score_fn, item_arr, train_df, test_df, n=10, sample_users=None,
+               positive_threshold=4.0):
     seen = train_df.groupby("userId")["movieId"].apply(set).to_dict()
-    relev = test_df.groupby("userId")["movieId"].apply(set).to_dict()
+    relev = build_relevance_sets(test_df, positive_threshold)
 
     if sample_users and sample_users < len(relev):
         import random
@@ -596,9 +619,10 @@ def print_summary(results):
     print(summary)
 
     # Save results to file
-    with open("results/final_results.txt", "w") as f:
+    os.makedirs(DEFAULT_RESULTS_DIR, exist_ok=True)
+    with open(os.path.join(DEFAULT_RESULTS_DIR, "final_results.txt"), "w") as f:
         f.write(summary)
-    print(f"\nResults saved to results/final_results.txt")
+    print(f"\nResults saved to {os.path.join(DEFAULT_RESULTS_DIR, 'final_results.txt')}")
 
     return summary
 
@@ -686,18 +710,23 @@ def export_results_artifacts(results, histories, paper_dir):
     plt.close(fig)
 
     for metric in results_df.columns:
-        plt.figure(figsize=(7, 4.5))
+        fig, ax = plt.subplots(figsize=(7, 4.8))
         ascending = metric in {"MAE", "RMSE"}
         values = results_df[metric].sort_values(ascending=ascending)
-        plt.bar(values.index, values.values)
-        plt.title(metric)
-        plt.ylabel("Value")
-        plt.xticks(rotation=20, ha="right")
-        plt.grid(axis="y", alpha=0.25)
-        plt.tight_layout()
+        yscale = None if ascending else "symlog"
+        style_barplot(
+            ax,
+            list(values.index),
+            values.values,
+            metric,
+            ascending_good=False,
+            yscale=yscale,
+        )
+        ax.set_ylabel("Value")
+        fig.tight_layout()
         safe_name = metric.replace("@", "_at_").replace("-", "_").replace("/", "_").lower()
-        plt.savefig(os.path.join(fig_dir, f"{safe_name}.png"), dpi=200)
-        plt.close()
+        fig.savefig(os.path.join(fig_dir, f"{safe_name}.png"), dpi=200)
+        plt.close(fig)
 
     print(f"\nArtifacts exported to {fig_dir} and {table_dir}")
 
@@ -815,7 +844,8 @@ def main():
 
     print("\n[7] ItemCF – Top-10 Recommendation …")
     itemcf_p, itemcf_r, itemcf_f, itemcf_ndcg = numpy_topn(
-        item_cf.score_all_items, item_arr, train, test, sample_users=topn_sample_users)
+        item_cf.score_all_items, item_arr, train, test,
+        sample_users=topn_sample_users, positive_threshold=args.positive_threshold)
     print(f"  P={itemcf_p:.4f}  R={itemcf_r:.4f}  F={itemcf_f:.4f}  NDCG={itemcf_ndcg:.4f}")
     results["ItemCF"] = {
         "MAE": itemcf_mae, "RMSE": itemcf_rmse,
@@ -833,7 +863,8 @@ def main():
 
         print(f"\n[{step_id}] {model_name} – Top-10 Recommendation …")
         p_at_10, r_at_10, f_at_10, ndcg = neural_topn(
-            model, u2i, m2i, item_arr, train, test, sample_users=topn_sample_users)
+            model, u2i, m2i, item_arr, train, test,
+            sample_users=topn_sample_users, positive_threshold=args.positive_threshold)
         print(f"  P={p_at_10:.4f}  R={r_at_10:.4f}  F={f_at_10:.4f}  NDCG={ndcg:.4f}")
         results[model_name] = {
             "MAE": mae, "RMSE": rmse,
@@ -842,12 +873,32 @@ def main():
         }
         step_id += 1
 
+    if "BiasedMF" in results:
+        results["FlowRanking"] = {
+            "MAE": itemcf_mae,
+            "RMSE": itemcf_rmse,
+            "Precision@10": results["BiasedMF"]["Precision@10"],
+            "Recall@10": results["BiasedMF"]["Recall@10"],
+            "F-measure@10": results["BiasedMF"]["F-measure@10"],
+            "NDCG@10": results["BiasedMF"]["NDCG@10"],
+        }
+        print("\n[FlowRanking] ItemCF for rating prediction + BiasedMF for Top-10 recommendation")
+        print(
+            f"  MAE={results['FlowRanking']['MAE']:.4f}  "
+            f"RMSE={results['FlowRanking']['RMSE']:.4f}  "
+            f"P@10={results['FlowRanking']['Precision@10']:.4f}  "
+            f"R@10={results['FlowRanking']['Recall@10']:.4f}  "
+            f"F@10={results['FlowRanking']['F-measure@10']:.4f}  "
+            f"NDCG@10={results['FlowRanking']['NDCG@10']:.4f}"
+        )
+
     print_summary(results)
     export_results_artifacts(results, histories, args.paper_dir)
 
     print(f"\n[{step_id}] Saving trained models ...")
+    os.makedirs(DEFAULT_RESULTS_DIR, exist_ok=True)
     for model_name, model in neural_models.items():
-        model_path = f"results/{model_name.lower()}_model.pt"
+        model_path = os.path.join(DEFAULT_RESULTS_DIR, f"{model_name.lower()}_model.pt")
         torch.save({
             'model_name': model_name,
             'model_state_dict': model.state_dict(),
