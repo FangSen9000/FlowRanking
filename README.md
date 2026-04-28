@@ -10,7 +10,7 @@ Author: Sen Fang
 
 - `assets/flow_ranking_paper.pdf`: compiled project paper.
 - `assets/flow_ranking_slides.pptx`: presentation slides.
-- `assets/flow_ranking_code_bundle.zip`: code and result bundle for the recommender experiments.
+- `assets/flow_ranking_code_bundle.zip`: training code, result tables, and the ControlWorld demo plugin bundle.
 - `assets/flow_ranking_paper_source.zip`: LaTeX source bundle for the paper.
 - `assets/final_results.txt`: text summary of the final benchmark.
 - `static/images/movielens/`: figures exported from the training and paper pipeline.
