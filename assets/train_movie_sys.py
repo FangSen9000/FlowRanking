@@ -85,6 +85,16 @@ def style_barplot(ax, labels, values, title, ascending_good=False, highlight_lab
         positive_vals = np.asarray([v for v in values if v > 0], dtype=float)
         linthresh = max(positive_vals.min() / 2, 1e-4) if len(positive_vals) else 1e-4
         ax.set_yscale("symlog", linthresh=linthresh)
+    else:
+        finite_values = np.asarray([v for v in values if np.isfinite(v)], dtype=float)
+        if len(finite_values):
+            lower = finite_values.min() * 0.8
+            upper = finite_values.max() * 1.2
+            if np.isclose(lower, upper):
+                pad = abs(upper) * 0.2 if upper else 0.1
+                lower -= pad
+                upper += pad
+            ax.set_ylim(lower, upper)
     if ascending_good:
         ax.invert_yaxis()
     for bar, value in zip(bars, values):
@@ -682,6 +692,12 @@ def export_results_artifacts(results, histories, paper_dir):
                 color=palette.get(model_name, BASELINE_BLUE),
                 label=model_name,
             )
+        finite_losses = []
+        for line in ax.get_lines():
+            finite_losses.extend([v for v in line.get_ydata() if np.isfinite(v)])
+        if finite_losses:
+            finite_losses = np.asarray(finite_losses, dtype=float)
+            ax.set_ylim(finite_losses.min() * 0.8, finite_losses.max() * 1.2)
         ax.set_xlabel("Epoch")
         ax.set_ylabel("Normalized Loss")
         ax.set_title("Training Curves for Public Components")
@@ -707,7 +723,7 @@ def export_results_artifacts(results, histories, paper_dir):
     axes = axes.flatten()
     for ax, metric in zip(axes, ranking_cols):
         vals = results_df[metric]
-        style_barplot(ax, list(vals.index), vals.values, metric, ascending_good=False, yscale="symlog")
+        style_barplot(ax, list(vals.index), vals.values, metric, ascending_good=False, yscale=None)
     fig.suptitle("Top-10 Recommendation Metrics", y=0.98)
     fig.tight_layout()
     fig.savefig(os.path.join(fig_dir, "topn_metrics_bar.png"), dpi=200)
@@ -717,14 +733,13 @@ def export_results_artifacts(results, histories, paper_dir):
         fig, ax = plt.subplots(figsize=(7, 4.8))
         ascending = metric in {"MAE", "RMSE"}
         values = results_df[metric].sort_values(ascending=ascending)
-        yscale = None if ascending else "symlog"
         style_barplot(
             ax,
             list(values.index),
             values.values,
             metric,
             ascending_good=False,
-            yscale=yscale,
+            yscale=None,
         )
         ax.set_ylabel("Value")
         fig.tight_layout()
