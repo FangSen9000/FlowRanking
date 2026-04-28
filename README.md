@@ -20,12 +20,11 @@ Author: Sen Fang
 - `ItemCF`
 - `BiasedMF`
 - `ClassicNeuMF`
-- `FlowNeuMF`
 - `FlowRanking`
 
 ## Best project claim
 
-The final `FlowRanking` system reaches the best value on all required course metrics by using the strongest validated component for each task: `ItemCF` for rating prediction and `BiasedMF` for Top-10 recommendation. The `FlowNeuMF` ablation remains useful because it improves the neural baseline on rating error, showing where the flow-style regularization helps.
+The final `FlowRanking` system reaches the best value on all required course metrics by using the strongest validated component for each task: `ItemCF` for rating prediction and `BiasedMF` for Top-10 recommendation.
 
 ## Local preview
 

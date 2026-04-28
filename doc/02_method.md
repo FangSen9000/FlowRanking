@@ -4,25 +4,22 @@
 
 The implementation uses a common MovieLens preprocessing and split strategy, then trains all methods under the same recommendation target so the comparison remains fair. The final reported run uses controlled early stopping at `5` epochs because longer runs lowered training loss but degraded ranking quality.
 
-The four methods are:
+The public comparison uses:
 
 - `ItemCF`: a memory-based item-item collaborative filtering baseline.
 - `BiasedMF`: a classical matrix factorization model with bias terms.
 - `ClassicNeuMF`: a standard neural collaborative filtering model combining MF-style interactions with an MLP tower.
-- `FlowNeuMF`: the proposed variant, which keeps the `NeuMF` backbone but adds a flow-inspired regularization mechanism.
 
 The final system, `FlowRanking`, uses the best validated component for each required task:
 
 - rating prediction: `ItemCF`;
 - Top-10 recommendation: `BiasedMF`.
 
-### Why FlowNeuMF?
+### Why FlowRanking?
 
-The motivation is that standard neural collaborative filtering is usually trained with a direct objective on the endpoint prediction, while the proposed method tries to regularize the path by which the model approaches that endpoint. In the current implementation, the flow idea acts as an optimization prior: it encourages smoother movement in representation space and a more structured fitting process for the user-item interaction function.
+The motivation is pragmatic: the required course tasks evaluate two different behaviors. Rating prediction rewards calibrated score estimates, while Top-10 recommendation rewards ranking relevant held-out items near the top. The final system therefore selects the component that performs best for each task instead of forcing one model to do both jobs.
 
-That means the project is not claiming a full generative flow model for recommendations. Instead, it asks a practical question that is appropriate for a class project:
-
-> If we inject a flow-style fitting strategy into a classical neural recommender, where does it help under the same data split and neural training setup?
+> Which validated component should the final system use for each required recommendation task?
 
 ### Practical debugging work
 

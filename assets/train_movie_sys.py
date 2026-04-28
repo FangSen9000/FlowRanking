@@ -61,7 +61,7 @@ def set_global_seed(seed):
         torch.backends.cudnn.benchmark = False
 
 
-def style_barplot(ax, labels, values, title, ascending_good=False, highlight_label="FlowNeuMF",
+def style_barplot(ax, labels, values, title, ascending_good=False, highlight_label="FlowRanking",
                   yscale=None):
     x = np.arange(len(labels))
     colors, edgecolors, linewidths = [], [], []
@@ -598,7 +598,7 @@ def predict_batch(model, df, u2i, m2i):
 # ═════════════════════════════════════════════════════════════════════════════
 
 def print_summary(results):
-    cols = list(results.keys()); w = 13
+    cols = [c for c in results.keys() if c != "FlowNeuMF"]; w = 13
     hdr = f"{'Metric':<{w}}" + "".join(f"{c:>{w}}" for c in cols)
     sep = "-" * len(hdr)
     summary = "\n" + "=" * len(hdr) + "\nRESULTS SUMMARY\n" + sep + "\n"
@@ -641,6 +641,9 @@ def export_results_artifacts(results, histories, paper_dir):
     results_df = pd.DataFrame(results).T
     results_df.index.name = "Model"
     results_df = results_df[["MAE", "RMSE", "Precision@10", "Recall@10", "F-measure@10", "NDCG@10"]]
+    if "FlowNeuMF" in results_df.index:
+        results_df.loc[["FlowNeuMF"]].to_csv(os.path.join(table_dir, "ablation_results.csv"))
+        results_df = results_df.drop(index="FlowNeuMF")
     results_df.to_csv(os.path.join(table_dir, "results_summary.csv"))
 
     latex_df = results_df.rename(columns={
@@ -663,9 +666,10 @@ def export_results_artifacts(results, histories, paper_dir):
         palette = {
             "BiasedMF": BASELINE_BLUE,
             "ClassicNeuMF": BASELINE_GREEN,
-            "FlowNeuMF": FLOW_HIGHLIGHT,
         }
         for model_name, grp in history_df.groupby("model"):
+            if model_name == "FlowNeuMF":
+                continue
             grp = grp.sort_values("epoch")
             start_loss = max(float(grp["loss"].iloc[0]), 1e-8)
             normalized = grp["loss"] / start_loss
@@ -674,13 +678,13 @@ def export_results_artifacts(results, histories, paper_dir):
                 normalized,
                 marker="o",
                 markersize=3,
-                linewidth=2.0 if model_name == "FlowNeuMF" else 1.8,
+                linewidth=1.8,
                 color=palette.get(model_name, BASELINE_BLUE),
                 label=model_name,
             )
         ax.set_xlabel("Epoch")
         ax.set_ylabel("Normalized Loss")
-        ax.set_title("Normalized Training Loss Curves")
+        ax.set_title("Training Curves for Public Components")
         ax.grid(alpha=0.25)
         ax.legend()
         fig.tight_layout()

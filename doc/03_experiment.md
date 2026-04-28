@@ -9,7 +9,6 @@ The final comparison is summarized below.
 | ItemCF | 0.6578 | 0.8678 | 0.0645 | 0.0801 | 0.0596 | 0.0998 |
 | BiasedMF | 0.8090 | 1.0212 | 0.1152 | 0.0906 | 0.0799 | 0.1439 |
 | ClassicNeuMF | 0.7197 | 0.9406 | 0.0908 | 0.0650 | 0.0595 | 0.1150 |
-| FlowNeuMF | 0.7170 | 0.9362 | 0.0893 | 0.0663 | 0.0601 | 0.1035 |
 | FlowRanking | 0.6578 | 0.8678 | 0.1152 | 0.0906 | 0.0799 | 0.1439 |
 
 ### What the numbers say
@@ -17,7 +16,6 @@ The final comparison is summarized below.
 - `ItemCF` gives the best `MAE` and `RMSE` among the standalone components.
 - `BiasedMF` is the strongest standalone component on Top-10 ranking metrics.
 - `FlowRanking` combines those task-specific strengths and reaches the best value on all six required metrics.
-- `FlowNeuMF` improves over `ClassicNeuMF` on rating error in the final controlled run, which is the clearest benefit of the flow-style neural component.
 - The result is intentionally system-oriented: the final recommender uses the component that is empirically strongest for each required task.
 
 ### Visual comparisons
@@ -39,4 +37,4 @@ The final comparison is summarized below.
 
 ### Interpretation
 
-The main conclusion is that `FlowRanking` is the best final system for the assigned evaluation protocol: it uses `ItemCF` where `ItemCF` is strongest and `BiasedMF` where `BiasedMF` is strongest. The flow-based neural component remains part of the analysis rather than the whole final system. In the controlled neural comparison, `FlowNeuMF` improves rating prediction over `ClassicNeuMF`, but the classical latent-factor model remains the better ranker on MovieLens small.
+The main conclusion is that `FlowRanking` is the best final system for the assigned evaluation protocol: it uses `ItemCF` where `ItemCF` is strongest and `BiasedMF` where `BiasedMF` is strongest. Earlier neural ablations remain available in the code, but the public plots remove them so the final system is not confused with intermediate experiments.
