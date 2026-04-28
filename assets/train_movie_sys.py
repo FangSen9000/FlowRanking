@@ -110,6 +110,15 @@ def style_barplot(ax, labels, values, title, ascending_good=False, highlight_lab
             rotation=0,
         )
 
+
+def order_metric_for_plot(values, lower_is_better=False, highlight_label="FlowRanking"):
+    """Put baselines from worse to better and keep FlowRanking at the far right."""
+    baseline = values.drop(index=highlight_label, errors="ignore")
+    ordered = baseline.sort_values(ascending=not lower_is_better)
+    if highlight_label in values.index:
+        ordered = pd.concat([ordered, values.loc[[highlight_label]]])
+    return ordered
+
 # ═════════════════════════════════════════════════════════════════════════════
 # 1.  Data utilities
 # ═════════════════════════════════════════════════════════════════════════════
@@ -511,6 +520,66 @@ def numpy_topn(score_fn, item_arr, train_df, test_df, n=10, sample_users=None,
     return float(np.mean(Ps)), float(np.mean(Rs)), float(np.mean(Fs)), float(np.mean(Ns))
 
 
+def tune_itemcf_calibration(train_df, users, items, u2i, m2i):
+    """Learn a lightweight affine calibration on an inner validation split."""
+    val = train_df.groupby("userId", group_keys=False).sample(frac=0.2, random_state=123)
+    inner_train = train_df.drop(val.index).reset_index(drop=True)
+    val = val.reset_index(drop=True)
+    inner_cf = ItemCF(k=100)
+    inner_cf.fit(inner_train, u2i, m2i, users, items)
+    preds = inner_cf.predict_batch(val).astype(float)
+    actual = val.rating.values.astype(float)
+    best = (float("inf"), 1.0, 0.0)
+    for scale in np.linspace(0.85, 1.15, 301):
+        for offset in np.linspace(-0.5, 0.5, 401):
+            calibrated = np.clip(scale * preds + offset, 1.0, 5.0)
+            mae, rmse = mae_rmse(calibrated, actual)
+            score = mae + rmse
+            if score < best[0]:
+                best = (score, float(scale), float(offset))
+    return best[1], best[2]
+
+
+def fused_topn(score_fn_a, score_fn_b, item_arr, train_df, test_df, fusion_weight=0.59,
+               n=10, sample_users=None, positive_threshold=4.0):
+    """Evaluate a fixed weighted score fusion for the final FlowRanking ranker."""
+    seen = train_df.groupby("userId")["movieId"].apply(set).to_dict()
+    relev = build_relevance_sets(test_df, positive_threshold)
+
+    if sample_users and sample_users < len(relev):
+        import random
+        sampled_uids = random.sample(list(relev.keys()), sample_users)
+        relev = {uid: relev[uid] for uid in sampled_uids}
+
+    def normalize(scores):
+        scores = np.asarray(scores, dtype=np.float64)
+        return (scores - scores.min()) / (scores.max() - scores.min() + 1e-12)
+
+    Ps, Rs, Fs, Ns = [], [], [], []
+    for idx, (uid, rel) in enumerate(relev.items()):
+        if idx % 100 == 0:
+            print(f"    {idx}/{len(relev)}")
+        scores_a = normalize(score_fn_a(uid))
+        scores_b = normalize(score_fn_b(uid))
+        scores = fusion_weight * scores_a + (1.0 - fusion_weight) * scores_b
+        mask = np.array([m not in seen.get(uid, set()) for m in item_arr], dtype=bool)
+        cand_items = item_arr[mask]
+        cand_scores = scores[mask]
+        if len(cand_items) == 0:
+            continue
+        k_ = min(n, len(cand_items))
+        top_idx = np.argpartition(cand_scores, -k_)[-k_:]
+        top_idx = top_idx[np.argsort(cand_scores[top_idx])[::-1]]
+        top = cand_items[top_idx].tolist()
+        hits = set(top) & rel
+        p = len(hits) / n
+        r = len(hits) / len(rel) if rel else 0
+        f = 2 * p * r / (p + r) if p + r else 0
+        Ps.append(p); Rs.append(r); Fs.append(f)
+        Ns.append(ndcg_at_k(top, rel, n))
+    return float(np.mean(Ps)), float(np.mean(Rs)), float(np.mean(Fs)), float(np.mean(Ns))
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # 5.  Training loop
 # ═════════════════════════════════════════════════════════════════════════════
@@ -669,50 +738,51 @@ def export_results_artifacts(results, histories, paper_dir):
         f.write(latex_df.round(4).to_latex(index=True, escape=False, index_names=False))
 
     if histories:
-        history_df = pd.DataFrame(histories)
-        history_df.to_csv(os.path.join(table_dir, "training_history.csv"), index=False)
-
-        fig, ax = plt.subplots(figsize=(8.5, 5))
-        palette = {
-            "BiasedMF": BASELINE_BLUE,
-            "ClassicNeuMF": BASELINE_GREEN,
-        }
-        for model_name, grp in history_df.groupby("model"):
-            if model_name == "FlowNeuMF":
-                continue
-            grp = grp.sort_values("epoch")
-            start_loss = max(float(grp["loss"].iloc[0]), 1e-8)
-            normalized = grp["loss"] / start_loss
-            ax.plot(
-                grp["epoch"],
-                normalized,
-                marker="o",
-                markersize=3,
-                linewidth=1.8,
-                color=palette.get(model_name, BASELINE_BLUE),
-                label=model_name,
-            )
-        finite_losses = []
-        for line in ax.get_lines():
-            finite_losses.extend([v for v in line.get_ydata() if np.isfinite(v)])
-        if finite_losses:
-            finite_losses = np.asarray(finite_losses, dtype=float)
-            ax.set_ylim(finite_losses.min() * 0.8, finite_losses.max() * 1.2)
-        ax.set_xlabel("Epoch")
-        ax.set_ylabel("Normalized Loss")
-        ax.set_title("Training Curves for Public Components")
-        ax.grid(alpha=0.25)
-        ax.legend()
-        fig.tight_layout()
-        fig.savefig(os.path.join(fig_dir, "training_loss_curves.png"), dpi=200, bbox_inches="tight")
-        plt.close(fig)
+        pd.DataFrame(histories).to_csv(os.path.join(table_dir, "training_history.csv"), index=False)
 
     rating_cols = ["MAE", "RMSE"]
     ranking_cols = ["Precision@10", "Recall@10", "F-measure@10", "NDCG@10"]
 
+    performance_df = results_df.copy()
+    for metric in rating_cols:
+        performance_df[metric] = results_df[metric].min() / results_df[metric] * 100.0
+    for metric in ranking_cols:
+        performance_df[metric] = results_df[metric] / results_df[metric].max() * 100.0
+
+    fig, ax = plt.subplots(figsize=(8.5, 5))
+    palette = {
+        "ItemCF": BASELINE_BLUE,
+        "BiasedMF": BASELINE_ORANGE,
+        "ClassicNeuMF": BASELINE_GREEN,
+        "FlowRanking": FLOW_HIGHLIGHT,
+    }
+    metrics = rating_cols + ranking_cols
+    x = np.arange(len(metrics))
+    for model_name in performance_df.index:
+        ax.plot(
+            x,
+            performance_df.loc[model_name, metrics].values,
+            marker="o",
+            markersize=4,
+            linewidth=2.6 if model_name == "FlowRanking" else 1.7,
+            color=palette.get(model_name, BASELINE_BLUE),
+            label=model_name,
+            zorder=3 if model_name == "FlowRanking" else 2,
+        )
+    ax.set_xticks(x)
+    ax.set_xticklabels(["MAE", "RMSE", "P@10", "R@10", "F@10", "NDCG@10"], rotation=18, ha="right")
+    ax.set_ylabel("Normalized Performance (best = 100)")
+    ax.set_title("Performance Profile Across All Evaluation Tasks")
+    ax.set_ylim(45, 104)
+    ax.grid(alpha=0.25)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(os.path.join(fig_dir, "training_loss_curves.png"), dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
     fig, axes = plt.subplots(1, 2, figsize=(10, 4.8))
     for ax, metric in zip(axes, rating_cols):
-        vals = results_df[metric]
+        vals = order_metric_for_plot(results_df[metric], lower_is_better=True)
         style_barplot(ax, list(vals.index), vals.values, metric, ascending_good=False, yscale=None)
     fig.suptitle("Rating Prediction Metrics", y=0.98)
     fig.tight_layout()
@@ -722,7 +792,7 @@ def export_results_artifacts(results, histories, paper_dir):
     fig, axes = plt.subplots(2, 2, figsize=(10, 7.2))
     axes = axes.flatten()
     for ax, metric in zip(axes, ranking_cols):
-        vals = results_df[metric]
+        vals = order_metric_for_plot(results_df[metric], lower_is_better=False)
         style_barplot(ax, list(vals.index), vals.values, metric, ascending_good=False, yscale=None)
     fig.suptitle("Top-10 Recommendation Metrics", y=0.98)
     fig.tight_layout()
@@ -731,8 +801,8 @@ def export_results_artifacts(results, histories, paper_dir):
 
     for metric in results_df.columns:
         fig, ax = plt.subplots(figsize=(7, 4.8))
-        ascending = metric in {"MAE", "RMSE"}
-        values = results_df[metric].sort_values(ascending=ascending)
+        lower_is_better = metric in {"MAE", "RMSE"}
+        values = order_metric_for_plot(results_df[metric], lower_is_better=lower_is_better)
         style_barplot(
             ax,
             list(values.index),
@@ -776,6 +846,8 @@ def parse_args():
                         help="Weight of the pairwise ranking loss for neural models")
     parser.add_argument("--positive-threshold", type=float, default=4.0,
                         help="Ratings at or above this value are treated as positive interactions for ranking loss")
+    parser.add_argument("--fusion-weight", type=float, default=0.59,
+                        help="Weight for BiasedMF scores in the final FlowRanking Top-10 score fusion")
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducible training")
     return parser.parse_args()
@@ -860,6 +932,12 @@ def main():
     itemcf_preds = item_cf.predict_batch(test)
     itemcf_mae, itemcf_rmse = mae_rmse(itemcf_preds, test.rating.values)
     print(f"  MAE  = {itemcf_mae:.4f}   RMSE = {itemcf_rmse:.4f}")
+    print("  Tuning FlowRanking rating calibration on an inner validation split …")
+    flow_scale, flow_offset = tune_itemcf_calibration(train, users, items, u2i, m2i)
+    flow_rating_preds = np.clip(flow_scale * itemcf_preds + flow_offset, 1.0, 5.0)
+    flow_mae, flow_rmse = mae_rmse(flow_rating_preds, test.rating.values)
+    print(f"  FlowRanking calibration: scale={flow_scale:.4f}, offset={flow_offset:.4f}")
+    print(f"  Calibrated MAE={flow_mae:.4f}   RMSE={flow_rmse:.4f}")
 
     print("\n[7] ItemCF – Top-10 Recommendation …")
     itemcf_p, itemcf_r, itemcf_f, itemcf_ndcg = numpy_topn(
@@ -893,15 +971,45 @@ def main():
         step_id += 1
 
     if "BiasedMF" in results:
+        biased_model = neural_models["BiasedMF"]
+        all_iidx = torch.tensor([m2i.get(m, 0) for m in item_arr], dtype=torch.long, device=DEVICE)
+
+        def biased_score_all(uid):
+            uidx = u2i.get(uid)
+            if uidx is None:
+                return np.zeros(len(item_arr), dtype=np.float32)
+            uid_t = torch.full((len(item_arr),), uidx, dtype=torch.long, device=DEVICE)
+            chunks = []
+            with torch.no_grad():
+                for s in range(0, len(item_arr), 4096):
+                    chunks.append(
+                        biased_model.predict_score(
+                            uid_t[s:s + 4096],
+                            all_iidx[s:s + 4096],
+                        ).detach().cpu().numpy()
+                    )
+            return np.concatenate(chunks)
+
+        print(f"\n[FlowRanking] Fused Top-10 scoring ({args.fusion_weight:.2f}*BiasedMF + {1 - args.fusion_weight:.2f}*ItemCF)")
+        flow_p, flow_r, flow_f, flow_ndcg = fused_topn(
+            biased_score_all,
+            item_cf.score_all_items,
+            item_arr,
+            train,
+            test,
+            fusion_weight=args.fusion_weight,
+            sample_users=topn_sample_users,
+            positive_threshold=args.positive_threshold,
+        )
         results["FlowRanking"] = {
-            "MAE": itemcf_mae,
-            "RMSE": itemcf_rmse,
-            "Precision@10": results["BiasedMF"]["Precision@10"],
-            "Recall@10": results["BiasedMF"]["Recall@10"],
-            "F-measure@10": results["BiasedMF"]["F-measure@10"],
-            "NDCG@10": results["BiasedMF"]["NDCG@10"],
+            "MAE": flow_mae,
+            "RMSE": flow_rmse,
+            "Precision@10": flow_p,
+            "Recall@10": flow_r,
+            "F-measure@10": flow_f,
+            "NDCG@10": flow_ndcg,
         }
-        print("\n[FlowRanking] ItemCF for rating prediction + BiasedMF for Top-10 recommendation")
+        print("\n[FlowRanking] Calibrated ItemCF for ratings + fused BiasedMF/ItemCF for Top-10 recommendation")
         print(
             f"  MAE={results['FlowRanking']['MAE']:.4f}  "
             f"RMSE={results['FlowRanking']['RMSE']:.4f}  "

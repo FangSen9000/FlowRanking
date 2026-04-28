@@ -24,7 +24,7 @@ Author: Sen Fang
 
 ## Best project claim
 
-The final `FlowRanking` system reaches the best value on all required course metrics by using the strongest validated component for each task: `ItemCF` for rating prediction and `BiasedMF` for Top-10 recommendation.
+The final `FlowRanking` system reaches the best value on all required course metrics by using validation-calibrated `ItemCF` for rating prediction and fused `BiasedMF`/`ItemCF` scores for Top-10 recommendation.
 
 ## Local preview
 
